@@ -107,7 +107,7 @@ void In_Game_Display(void){
     // Handles screens for each state except for coutdown
     if (currentState == IDLE) {
         Display_setCursor(24, 35);
-        Display_print("Simon Says Game");
+        Display_print("Guitar Hero Game");
         Display_setTextSize(1, 1);
         Display_setCursor(24, 76);
         Display_print("Press SELECT to start");
