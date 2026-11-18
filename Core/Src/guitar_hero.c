@@ -16,7 +16,7 @@
 // left port middle row -> 9th pin from the right in the top row of CN10
 // right port middle row -> 2nd pin from the right in the top row of CN7
 
-
+//wrouegbhwrpighjeaortbgjoanernGIA;GNR
 
 // BUTTONS: PC3, PC5, PC11, PB8
 #define BUTTON_YELLOW_PIN GPIO_PIN_3 
