@@ -45,6 +45,7 @@
 
 extern volatile bool spiTxDone;
 
+extern void Game_TimerTick(void);
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -311,6 +312,17 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi) {
     // For example, you can set a flag or call another function
     spiTxDone = true;
   }
+}
+// guitar hero interupt
+void TIM2_IRQHandler(void)
+{
+    // check that TIM2 actually generated an event flag
+    if ((TIM2->SR & TIM_SR_UIF) != 0) {
+        // clear interrupt flag to avoid infinite looping
+        TIM2->SR = ~TIM_SR_UIF;
+        // update game timer and read buttons
+        Game_TimerTick();
+    }
 }
 
 /* USER CODE END 1 */
