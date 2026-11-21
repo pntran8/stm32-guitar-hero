@@ -30,8 +30,8 @@
 #include "stm32h5xx_hal.h"
 
 #include "buzzer.h"
-#include "stopwatch.h"
 #include "stm32h5xx_hal_tim.h"
+#include "guitar_hero.h"
 
 /* USER CODE END Includes */
 
@@ -88,7 +88,9 @@ static void MX_SPI2_Init(void);
 static void MX_RNG_Init(void);
 static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Game_GPIO_Init(void);
+void Game_Timer_Init(void);
+void Guitar_Hero_State_Machine(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -135,7 +137,7 @@ int main(void)
   MX_RNG_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-
+ 
   /* USER CODE END 2 */
 
   /* Initialize leds */
@@ -191,52 +193,14 @@ int main(void)
   TFTShield18_setBacklight(TFTSHIELD_BACKLIGHT_ON);
 
   /* Place extra user setup code here */
+  DWT_Init();
 
-  Display_setTextSize(1, 1);
-  Display_setTextColor(ST7735_BLACK);
-  Display_setCursor(Display_width() / 2 - 57, 10);
-  Display_print("ECE 2049 Stop Watch");
-  Display_setCursor(4, Display_height() - 20);
-  Display_print("B2: start   B1: stop/reset");
-
-  buzzerDisable(&buzzer1);                 // buzzer not used in this example
-
-  uint32_t lastButtonState = TFTSHIELD_BUTTON_ALL;
-  uint32_t timer_on = 0;
-  uint32_t lastShown = 0xFFFFFFFF;
-
-  displayTime(0);
+  Game_GPIO_Init();
+  Game_Timer_Init();
 
   while (1)    // Forever loop of the stop watch
   {
-    uint32_t buttons = TFTShield18_readButtons();   // pressed = 0
-
-    if (lastButtonState != buttons)                 // act once per press
-    {
-      if (!(buttons & TFTSHIELD_BUTTON_1))
-      {
-        timer_on = 0;
-        stopTimer2();                    // stop and reset timer
-        GPIOA->BSRR = GPIO_BSRR_BR5;     // turn LED off
-        displayTime(0);
-      }
-      if (!(buttons & TFTSHIELD_BUTTON_2) && !timer_on)
-      {
-        timer_on = 1;
-        runTimer2();                     // starts timer
-        GPIOA->BSRR = GPIO_BSRR_BR5;     // turn LED off
-      }
-    }
-    lastButtonState = buttons;
-
-    uint32_t now = timer;                // read the volatile count once
-    if (timer_on)
-      if (now % 10 == 0 && now != lastShown)   // update display every 1/10th sec
-      {
-        displayTime(now);
-        lastShown = now;
-      }
-
+    Guitar_Hero_State_Machine();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
