@@ -15,7 +15,7 @@
 #include "Adafruit_ST7735_Macros.h"
 
 volatile uint32_t timer = 0;   // hundredths of a second since start
-
+/*
 void runTimer2(void)
 {
     // enable TIM2's clock (|= : other APB1 peripherals are already on)
@@ -64,4 +64,4 @@ void displayTime(uint32_t t)
     Display_setTextColorWithBg(ST7735_BLACK, ST7735_WHITE);  // overwrite old digits
     Display_setCursor(20, 56);
     Display_print(str);
-}
+}*/
