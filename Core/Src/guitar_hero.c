@@ -526,7 +526,7 @@ void Guitar_Hero_State_Machine(void){
             windowTicks = 1;
         }
         bool inWindow = (stateTicks + windowTicks >= duration);       
-        if (!noteCorrect && pressed == (1u << Disp_NoteLane(currentNote))) {
+        if (!noteCorrect && inWindow && pressed == (1u << Disp_NoteLane(currentNote))) {
             correct++;
             noteCorrect = true;
         }
