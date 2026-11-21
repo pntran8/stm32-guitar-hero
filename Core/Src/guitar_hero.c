@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <stdio.h>
 #include "main.h"
 #include "stm32h533xx.h"
@@ -37,28 +38,6 @@
 // BUZZER: PA8
 #define BUZZER_PIN GPIO_PIN_8
 #define BUZZER_PORT GPIOA
-
-#define SCREEN_W 160
-#define LANE_W 40
-#define SCORE_BAR 14 // score bar at the top
-#define NOTE_W 32
-#define NOTE_H 10
-#define NOTE_PAD 4 // (LANE_W - NOTE_W) / 2
-#define TARGET_Y 112 // button target area at the bottom
-#define TARGET_H 14
-#define MAX_ON_SCREEN 6 // max notes visible at once
-#define COLOR_GRAY 0xC618
-
-#define SCREEN_W 160
-#define LANE_W 40
-#define SCORE_BAR 14 // score bar at the top
-#define NOTE_W 32
-#define NOTE_H 10
-#define NOTE_PAD 4 // (LANE_W - NOTE_W) / 2
-#define TARGET_Y 112 // button target area at the bottom
-#define TARGET_H 14
-#define MAX_ON_SCREEN 6 // max notes visible at once
-#define COLOR_GRAY 0xC618
 
 // Define the states of the Guitar Hero game
 typedef enum{
@@ -201,7 +180,6 @@ void Game_TimerTick(void)
     }
 }
 
-
 // Main-loop helper: fetch new presses once while preserving IRQ state.
 uint8_t Game_TakeButtonPresses(void)
 {
@@ -212,7 +190,6 @@ uint8_t Game_TakeButtonPresses(void)
 
     return events;
 }
-
 
 void Game_StartNote(uint16_t duration)
 {
@@ -227,13 +204,262 @@ void Game_StartNote(uint16_t duration)
     __set_PRIMASK(irqState);
 }
 
+
+// ================================= display stuff =========================================
+#define SCREEN_W 160
+#define LANE_W 40
+#define SCORE_BAR 14 // score bar at the top
+#define NOTE_W 32
+#define NOTE_H 10
+#define NOTE_PAD 4 // (LANE_W - NOTE_W) / 2
+#define TARGET_Y 112 // button target area at the bottom
+#define TARGET_H 14
+#define COLOR_GRAY 0xC618
+#define NOTE_TRAVEL (TARGET_Y - NOTE_H - SCORE_BAR) // 88 px of fall
+#define COLOR_NOTE_HIT 0x7BEF
+#define HIT_WINDOW_PX 16 // note's bottom edge within this many px of the target
+
+static const uint16_t brightColors[4] = {0xFFE0, 0x001F, 0xF800, 0x07E0}; // yellow, blue, red, green
+static const uint16_t dimColors[4] = {0x5280, 0x000A, 0x5000, 0x0200};
+
+// TEMP song stuff
+// REPLACE ONCE THE SONG TABLE EXISTS!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!  
+// lane = button index (0, 1, 2, 3) (yellow, blue, red, green) = bit i of Game_ReadButtons()
+// if song stores button as a mask, use PIN_NUM(mask)
+static inline uint8_t  Disp_NoteLane(uint8_t index) { 
+    return index % 4; 
+}      // TODO: song[index].button
+static inline uint16_t Disp_NoteDuration(uint8_t index) { 
+    (void)index; 
+    return 50; //right now each note only lasts 50 ticks
+} // TODO: song[index].duration (10 ms ticks)
+
+// idle state display
+static void draw_idle(void){
+    Display_setTextColor(ST7735_BLACK);
+    Display_setTextSize(1, 1);
+    Display_setCursor(50, 16);
+    Display_print("WELCOME TO");
+
+    Display_setTextSize(2, 2);
+    Display_setCursor(14, 30);
+    Display_print("GUITAR HERO");
+
+    Display_setTextSize(1, 1);
+    Display_setCursor(17, 76);
+    Display_print("Press SELECT to begin");
+
+    for (uint8_t i = 0; i < 4; i++) {
+        Display_fillRoundRect(24 + i * 30, 100, 22, 14, 3, brightColors[i]);
+    }}
+
+// game win or lose display
+static void draw_ending(bool win){
+    char buf[24];
+
+    Display_setTextSize(2, 2);
+    if (win) {
+        Display_setCursor(26, 24);
+        Display_setTextColor(0x1D87);
+        Display_print("YOU WIN!!");      // 108 px
+    } else {
+        Display_setCursor(14, 24);
+        Display_setTextColor(ST7735_RED);
+        Display_print("YOU LOSE :(");    // 132 px
+    }
+
+    Display_setTextColor(ST7735_BLACK);
+    snprintf(buf, sizeof(buf), "Score: %u/%u", (unsigned)correct, (unsigned)SONG_LENGTH);
+    Display_setCursor(8, 60);
+    Display_print(buf);
+
+    Display_setTextSize(1, 1);
+    Display_setCursor(14, 96);
+    Display_print("Press SELECT to return");
+    Display_setCursor(38, 108);
+    Display_print("to home screen");
+}
+
+//countdown display
+static void draw_countdown(bool newScreen){
+    static uint8_t lastShown = 0xFF;
+
+    uint32_t secs = stateTicks / TIMER_1SEC; // 0, 1, 2
+    uint8_t number = (secs >= 3) ? 1 : (uint8_t)(3 - secs); // 3, 2, 1
+
+    if (!newScreen && number == lastShown) { //not new screen and still the same number
+        return; // nothing changed
+    }
+    lastShown = number;
+
+    if (!newScreen) {
+        Display_fillScreen(ST7735_WHITE); // dispatcher already cleared if new
+    }
+
+    Display_setTextColor(ST7735_BLACK);
+    Display_setTextSize(1, 1);
+    Display_setCursor(53, 12);
+    Display_print("GET READY");
+
+    char buf[4];
+    snprintf(buf, sizeof(buf), "%u", (unsigned)number); //show number
+    Display_setTextSize(6, 6);
+    Display_setCursor(62, 40);
+    Display_print(buf);
+}
+
+// play sequence display
+static void draw_play(bool newScreen){
+    static int16_t lastY = -1;
+    static uint8_t lastLane = 0;
+    static bool lastHit = false;
+    static uint8_t lastCorrect, lastMissed, lastButtons;
+
+    // snapshot shared vars once per frame
+    bool started = noteStarted;
+    uint8_t index = currentNote;
+    uint32_t ticks = stateTicks;
+    uint8_t btns = buttons;
+    bool hit = noteCorrect;
+
+    if (newScreen) {
+        lastY = -1;
+        lastCorrect = lastMissed = 0xFF; // force HUD draw
+        lastButtons = (uint8_t)~btns; // force all four targets to draw
+
+        Display_fillRoundRect(0, SCORE_BAR - 1, SCREEN_W, 1, 0, COLOR_GRAY);
+        for (uint8_t i = 1; i < 4; i++) {
+            Display_fillRoundRect(i * LANE_W, SCORE_BAR, 1, TARGET_Y - SCORE_BAR, 0, COLOR_GRAY);
+        }
+    }
+
+    // score bar
+    if (correct != lastCorrect || missed != lastMissed) {
+        lastCorrect = correct;
+        lastMissed  = missed;
+
+        char buf[16];
+        Display_fillRoundRect(0, 0, SCREEN_W, SCORE_BAR - 1, 0, ST7735_WHITE);
+        Display_setTextColor(ST7735_BLACK);
+        Display_setTextSize(1, 1);
+
+        snprintf(buf, sizeof(buf), "Hits: %u", (unsigned)correct);
+        Display_setCursor(4, 3);
+        Display_print(buf);
+
+        snprintf(buf, sizeof(buf), "Miss: %u", (unsigned)missed);
+        Display_setCursor(90, 3);
+        Display_print(buf);
+    }
+
+    // falling note
+    int16_t newY = -1; // -1 is no note on screen
+    uint8_t lane = lastLane;
+    if (started) {
+        uint16_t dur = Disp_NoteDuration(index);
+
+        if (dur == 0) {
+            dur = 1;
+        }
+
+        uint32_t t = (ticks > dur) ? dur : ticks;
+        newY = SCORE_BAR + (int16_t)((uint32_t)NOTE_TRAVEL * t / dur);
+        lane = Disp_NoteLane(index);
+    }
+
+    bool changed = (newY != lastY) || (newY >= 0 && (lane != lastLane || hit != lastHit));
+    if (changed) {
+        bool slidDown = (newY >= 0 && lastY >= 0 && lane == lastLane && newY >= lastY);
+
+        if (!slidDown && lastY >= 0) { // note ended / new note / lane changed: wipe old one
+            Display_fillRoundRect(lastLane * LANE_W + NOTE_PAD, lastY, NOTE_W, NOTE_H, 0, ST7735_WHITE);
+        }
+
+        if (newY >= 0) {
+            int16_t x = lane * LANE_W + NOTE_PAD;
+            Display_fillRoundRect(x, newY, NOTE_W, NOTE_H, 3, hit ? COLOR_NOTE_HIT : brightColors[lane]);
+            
+            if (slidDown && newY > lastY) { // erase only the strip the note just left
+                int16_t h = newY - lastY;
+
+                if (h > NOTE_H) {
+                    h = NOTE_H;
+                }
+
+                Display_fillRoundRect(x, lastY, NOTE_W, h, 0, ST7735_WHITE);
+            }
+        }
+
+        lastY = newY;
+        lastLane = lane;
+        lastHit = hit;
+    }
+
+    // bottom targets light up when button is held
+    uint8_t diff = btns ^ lastButtons;
+    for (uint8_t i = 0; i < 4; i++) {
+        if (!(diff & (1u << i))) {
+            continue;
+        }
+        Display_fillRoundRect(i * LANE_W + NOTE_PAD, TARGET_Y, NOTE_W, TARGET_H, 4, (btns & (1u << i)) ? brightColors[i] : dimColors[i]);
+    }
+    lastButtons = btns;
+}
+
+void Guitar_Hero_Display(void){
+    static bool firstRun = true;
+    static State_t previousState = IDLE;
+
+    bool force = updateDisplay; // state machine / ISR can still request a full redraw
+    updateDisplay = false; // clear BEFORE drawing so a request during drawing isn't lost
+
+    State_t state = currentState; // snapshot of the volatile
+    bool newScreen = firstRun || force || (state != previousState);
+    firstRun = false;
+    previousState = state;
+
+    if (newScreen) {
+        Display_fillScreen(ST7735_WHITE);
+    }
+
+    switch (state) {
+        case IDLE:
+            if (newScreen) {
+                draw_idle();
+            }
+            break;
+        case COUNTDOWN:
+            draw_countdown(newScreen);
+            break;
+        case PLAY_SEQUENCE: 
+            draw_play(newScreen);
+            break;
+        case GAME_WIN:
+            if (newScreen) {
+                draw_ending(true);
+            }
+            break;
+        case GAME_LOSE:
+            if (newScreen) {
+                draw_ending(false);
+            } 
+            break;
+        default: 
+            break;
+    }
+}
+
+// ================================= display stuff ends =========================================
+
+
 void Guitar_Hero_State_Machine(void){
     // tracks if select ever gets pressed during the run of the state machine
     bool selectPressed = !(TFTShield18_readButtons() & TFTSHIELD_BUTTON_IN);
+    
     // switch state for each possible guitar hero state
     switch(currentState){
         case IDLE:
-        // TODO: Welcome screen with the word “Guitar Hero” on the display and instructions to “press the joystick to begin” 
+        // TODO: Welcome screen with the word “Guitar Hero” on the display and instructions to “press the joystick to begin”
         // resets everything and starts the game when select is pressed in the IDLE state
         if (selectPressed) {
             currentNote = 0;
@@ -260,18 +486,6 @@ void Guitar_Hero_State_Machine(void){
         case COUNTDOWN:
         // The system should show a countdown from 3 before starting the game. T
         // when update display is true, reset it and then display 3-2-1 depending on the amount of ticks that has passed
-        if (updateDisplay) {
-            updateDisplay = false;
-            if (stateTicks < 100) {
-                // Display 3
-            }
-            else if (stateTicks < 200) {
-                // Display 2
-            }
-            else {
-                // Display 1
-            }
-        }
         break;
 
         case PLAY_SEQUENCE:
@@ -295,7 +509,7 @@ void Guitar_Hero_State_Machine(void){
         // Start the current note
         if (!noteStarted) {
             noteCorrect = false;
-            Game_StartNote(/*DURATION OF NOTE IN SONG*/);
+            Game_StartNote(Disp_NoteDuration(currentNote));
             noteStarted = true;
 
             // TODO: Draw note
@@ -306,7 +520,13 @@ void Guitar_Hero_State_Machine(void){
         uint8_t pressed = Game_TakeButtonPresses();
 
         // check if the button the user pressed is correct
-        if (!noteCorrect && pressed == /*BUTTON ASSOCIATE WITH NOTE IN SONG*/) {
+        uint16_t duration = Disp_NoteDuration(currentNote);
+        uint32_t windowTicks = ((uint32_t)HIT_WINDOW_PX * duration) / NOTE_TRAVEL;
+        if (windowTicks < 1) {
+            windowTicks = 1;
+        }
+        bool inWindow = (stateTicks + windowTicks >= duration);       
+        if (!noteCorrect && pressed == (1u << Disp_NoteLane(currentNote))) {
             correct++;
             noteCorrect = true;
         }

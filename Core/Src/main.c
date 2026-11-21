@@ -201,6 +201,7 @@ int main(void)
   while (1)    // Forever loop of the stop watch
   {
     Guitar_Hero_State_Machine();
+    Guitar_Hero_Display();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
