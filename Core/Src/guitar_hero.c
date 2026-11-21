@@ -10,7 +10,8 @@
 #include "graphics/Adafruit_ST7735_API.h"
 #include "stm32h5xx_hal.h"
 
-//#include "buzzer.h"
+#include "stopwatch.h"
+#include "buzzer.h"
 #include "stm32h5xx_hal_tim.h"
 #include <stdbool.h>
 
@@ -22,6 +23,23 @@
 #define PIN_NUM(mask) (__builtin_ctz(mask)) //pin n's bit in ODR or IDR
 
 // DEFINE BUTTON PORTS AND PINS
+// display:
+// left port middle row -> 9th pin from the right in the top row of CN10
+// right port middle row -> 2nd pin from the right in the top row of CN7
+
+//Twinke, Twinkle, Little Star
+//C C G G A A G    ← hold G for 2 beats
+//F F E E D D C    ← hold C for 2 beats
+//G G F F E E D    ← hold D for 2 beats
+//G G F F E E D    ← hold D for 2 beats
+//C C G G A A G    ← hold G for 2 beats
+//F F E E D D C    ← hold C for 2 beats
+
+// C -> BUTTON_RED
+// D, E -> BUTTON_YELLOW
+// F, G -> BUTTON_GREEN
+// A -> BUTTON_BLUE
+
 // BUTTONS: PC3, PC5, PC11, PB8
 #define BUTTON_YELLOW_PIN GPIO_PIN_3 
 #define BUTTON_YELLOW_PORT GPIOC
@@ -39,6 +57,103 @@
 #define BUZZER_PIN GPIO_PIN_8
 #define BUZZER_PORT GPIOA
 
+// song definitions
+#define TICKS_PER_BEAT 50
+#define TICKS_GAP 5 //reserve time after each note for silence
+#define SONG_LENGTH (sizeof melody / sizeof melody[0]) // the length of the song by entries, this is 42
+
+extern Buzzer buzzer1; // found buzzer1 in main
+
+typedef struct { 
+    Note pitch; // the Notes in buzzer.h. eg. NOTE_C, NOTE_F
+    uint8_t beat; // how many beats the note occupies
+    uint8_t buttonMask; // expected button for this note
+} SongNote; // each individual note in a song
+
+enum { SONG_YELLOW = 0x01, SONG_BLUE = 0x02, SONG_RED = 0x04, SONG_GREEN = 0x08 };
+
+static const SongNote melody[] = {
+    // Twinkle, twinkle, little star
+    {NOTE_C, 1, SONG_RED},
+    {NOTE_C, 1, SONG_RED},
+    {NOTE_G, 1, SONG_GREEN},
+    {NOTE_G, 1, SONG_GREEN},
+    {NOTE_A * 2, 1, SONG_BLUE},
+    {NOTE_A * 2, 1, SONG_BLUE},
+    {NOTE_G, 2, SONG_GREEN},
+
+    // How I wonder what you are
+    {NOTE_F, 1, SONG_GREEN},
+    {NOTE_F, 1, SONG_GREEN},
+    {NOTE_E, 1, SONG_YELLOW},
+    {NOTE_E, 1, SONG_YELLOW},
+    {NOTE_D, 1, SONG_YELLOW},
+    {NOTE_D, 1, SONG_YELLOW},
+    {NOTE_C, 2, SONG_RED},
+
+    // Up above the world so high
+    {NOTE_G, 1, SONG_GREEN},
+    {NOTE_G, 1, SONG_GREEN},
+    {NOTE_F, 1, SONG_GREEN},
+    {NOTE_F, 1, SONG_GREEN},
+    {NOTE_E, 1, SONG_YELLOW},
+    {NOTE_E, 1, SONG_YELLOW},
+    {NOTE_D, 2, SONG_YELLOW},
+
+    // Like a diamond in the sky
+    {NOTE_G, 1, SONG_GREEN},
+    {NOTE_G, 1, SONG_GREEN},
+    {NOTE_F, 1, SONG_GREEN},
+    {NOTE_F, 1, SONG_GREEN},
+    {NOTE_E, 1, SONG_YELLOW},
+    {NOTE_E, 1, SONG_YELLOW},
+    {NOTE_D, 2, SONG_YELLOW},
+
+    // Twinkle, twinkle, little star
+    {NOTE_C, 1, SONG_RED},
+    {NOTE_C, 1, SONG_RED},
+    {NOTE_G, 1, SONG_GREEN},
+    {NOTE_G, 1, SONG_GREEN},
+    {NOTE_A * 2, 1, SONG_BLUE},
+    {NOTE_A * 2, 1, SONG_BLUE},
+    {NOTE_G, 2, SONG_GREEN},
+
+    // How I wonder what you are
+    {NOTE_F, 1, SONG_GREEN},
+    {NOTE_F, 1, SONG_GREEN},
+    {NOTE_E, 1, SONG_YELLOW},
+    {NOTE_E, 1, SONG_YELLOW},
+    {NOTE_D, 1, SONG_YELLOW},
+    {NOTE_D, 1, SONG_YELLOW},
+    {NOTE_C, 2, SONG_RED},
+};
+
+// This starts the tone. The game loop advances currentNote when TIM2 signals completion.
+static void playCurrentNote(uint8_t currentNote){
+    if (currentNote >= SONG_LENGTH) {
+        return;
+    }
+    Note pitch = melody[currentNote].pitch;
+
+    buzzerSetNote(&buzzer1, pitch, 1);
+    buzzerEnable(&buzzer1);
+}
+
+// Isaac: this is the version of Disp_NoteDuration to use to get the not to run the right amount of ticks
+static inline uint16_t Disp_NoteDuration(uint8_t index)
+{
+    // With 50 ticks per beat, a one-beat note gets 50 and a two-beat note gets 100.
+    return melody[index].beat * TICKS_PER_BEAT;
+}
+
+// Isaac: this is supposed to get the notes in the correct lane
+static inline uint8_t Disp_NoteLane(uint8_t index)
+{
+    // Convert the song's button mask to the screen's lane number.
+    // Example: red mask 0x04 becomes lane 2.
+    return (uint8_t)PIN_NUM(melody[index].buttonMask);
+}
+
 // Define the states of the Guitar Hero game
 typedef enum{
     IDLE,
@@ -51,8 +166,7 @@ typedef enum{
 // DEFINE CONSTANTS FOR GAME ATTRIBUTES
 #define NUM_BTNS 4
 #define TIMER_1SEC 100
-#define SONG_LENGTH 28 // TODO: replace with the actual value, this is a placeholder
-#define WIN_SCORE 20 // TODO: replace with the actual value, this is a placeholder
+#define WIN_SCORE 2 // how many notes the user has to have correct
 
 // game variables for the current note of the song, and boolean flags for note start and
 // checking if the note was correct
@@ -221,18 +335,6 @@ void Game_StartNote(uint16_t duration)
 
 static const uint16_t brightColors[4] = {0xFFE0, 0x001F, 0xF800, 0x07E0}; // yellow, blue, red, green
 static const uint16_t dimColors[4] = {0x5280, 0x000A, 0x5000, 0x0200};
-
-// TEMP song stuff
-// REPLACE ONCE THE SONG TABLE EXISTS!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!  
-// lane = button index (0, 1, 2, 3) (yellow, blue, red, green) = bit i of Game_ReadButtons()
-// if song stores button as a mask, use PIN_NUM(mask)
-static inline uint8_t  Disp_NoteLane(uint8_t index) { 
-    return index % 4; 
-}      // TODO: song[index].button
-static inline uint16_t Disp_NoteDuration(uint8_t index) { 
-    (void)index; 
-    return 50; //right now each note only lasts 50 ticks
-} // TODO: song[index].duration (10 ms ticks)
 
 // idle state display
 static void draw_idle(void){
@@ -493,6 +595,7 @@ void Guitar_Hero_State_Machine(void){
         // TODO: The song must have at least 28 notes and 4 pitches.
         // if select is pressed reset everything and return to IDLE
         if (selectPressed) {
+            buzzerDisable(&buzzer1);
             __disable_irq();
             currentState = IDLE;
             noteTicks = 0;
@@ -502,30 +605,31 @@ void Guitar_Hero_State_Machine(void){
             __enable_irq();
 
             noteStarted = false;
-            // TODO: Stop buzzer
             break;
         }
 
-        // Start the current note
+        // TODO: Stop buzzer
         if (!noteStarted) {
             noteCorrect = false;
             Game_StartNote(Disp_NoteDuration(currentNote));
+            playCurrentNote(currentNote);
             noteStarted = true;
+        }
 
-            // TODO: Draw note
-            // TODO: Play song[currentNote].frequency
+        uint16_t duration = Disp_NoteDuration(currentNote);  // the intention with this is to make each note sound distinct by putting a little gap inbetween them
+        if (buzzer1.currBuzzerState && stateTicks >= duration - TICKS_GAP) {
+            buzzerDisable(&buzzer1);
         }
 
         // Read the button events detected by TIM2, check button presses throughout
         uint8_t pressed = Game_TakeButtonPresses();
 
-        // check if the button the user pressed is correct
-        uint16_t duration = Disp_NoteDuration(currentNote);
+        // check if the button the user pressed is correct (only counts near the bottom of the screen)
         uint32_t windowTicks = ((uint32_t)HIT_WINDOW_PX * duration) / NOTE_TRAVEL;
         if (windowTicks < 1) {
             windowTicks = 1;
         }
-        bool inWindow = (stateTicks + windowTicks >= duration);       
+        bool inWindow = (stateTicks + windowTicks >= duration);
         if (!noteCorrect && inWindow && pressed == (1u << Disp_NoteLane(currentNote))) {
             correct++;
             noteCorrect = true;
@@ -547,6 +651,7 @@ void Guitar_Hero_State_Machine(void){
             if (!noteCorrect)
                 missed++;
             // TODO: Stop buzzer
+            buzzerDisable(&buzzer1);
             currentNote++;
             // check if the song is over and if the score is high enough to be winning
             if (currentNote >= SONG_LENGTH) {
